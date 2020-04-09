@@ -1,0 +1,5 @@
+library(rstan)
+library(here)
+rstan_options(auto_write = TRUE)
+dirichlet_mixture <- stan_model(here('simulations', 'DirichletMixture.stan'))
+quit('no')
