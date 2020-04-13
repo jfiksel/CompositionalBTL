@@ -9,6 +9,7 @@ library(MCMCpack)
 ### If you want to use here, this should work
 ### May have to initiate .Rproj for CompositionalBTL
 source(here("GibbsSamplingScripts", "CompositionalBTLGibbs.R"))
+source(here("GibbsSamplingScripts", "CompositionalBTLGibbs_pshrink.R"))
 ### Otherwise you can set the working directory to current working directory and run
 # source(file.path("..", "GibbsSamplingScripts", "CompositionalBTLGibbs.R"))
 
@@ -167,11 +168,99 @@ insilico_comp_btl <- compositional_btl(A_U = comp_array[,,k],
                                        power = 1/100,
                                        epsilon = .01,
                                        alpha = 10)
+
 ### Get calibrated predictions
 insilico_calib_p <-
     ggs(insilico_comp_btl, "p") %>%
     group_by(Parameter) %>%
     summarise(estimate = mean(value)) 
+
+insilico_comp_btl_uncalib <- compositional_btl(A_U = comp_array[,,k],
+                                       causes = as.character(1:C),
+                                       thin = 5,
+                                       burnin = 1000, ndraws = ndraw_gbql,
+                                       power = 1/100,
+                                       epsilon = .01,
+                                       alpha = 10)
+
+insilico_calib_p_uncalib <-
+    ggs(insilico_comp_btl2, "p") %>%
+    group_by(Parameter) %>%
+    summarise(estimate = mean(value)) 
+
+colMeans(comp_array[,,k]) - as.vector(insilico_calib_p_uncalib$estimate)
+
+### calibration using p-shrinkage
+lambdavec=10^(seq(-3,2,length=50))
+insilico_calib_pshrink_mat=Reduce('rbind',lapply(lambdavec,function(lambda){
+print(lambda)
+insilico_comp_btl_pshrink <- compositional_btl_pshrink(A_U = comp_array[,,k],
+                                       A_L = comp_array[calib_indices,,k],
+                                       G_L = G_L,
+                                       lambda=lambda,
+                                       causes = as.character(1:C),
+                                       thin = 5,
+                                       burnin = 1000, ndraws = ndraw_gbql,
+                                       power = 1/100,
+                                       epsilon = .01)
+
+param_df <- ggs(insilico_comp_btl_pshrink)
+p_df <- ggs(insilico_comp_btl_pshrink, family = "p")
+rhat_max <- max(ggs_Rhat(param_df)$data$Rhat)
+rhat_p_max = max(ggs_Rhat(p_df)$data$Rhat)
+
+insilico_calib_pshrink <-
+    ggs(insilico_comp_btl_pshrink, "p") %>%
+    group_by(Parameter) %>%
+    summarise(estimate = mean(value)) %>%
+    as.data.frame() %>%
+    mutate(lambda=lambda,Rhat=rhat_max,Rhat_p=rhat_p_max)
+    insilico_calib_pshrink
+}))
+
+true_p_df=data.frame(Parameter=paste0("p[",1:5,"]"),estimate=true_p[causes])
+true_q_df=data.frame(Parameter=paste0("p[",1:5,"]"),estimate=colMeans(comp_array[,,k]))
+
+### shrinkage paths
+insilico_calib_pshrink_mat %>%
+    ggplot(aes(x=log10(lambda),y=estimate,col=Parameter)) +
+    geom_line() +
+    geom_point(data=true_p_df,aes(x=2,y=estimate,col=Parameter),alpha=0.5,size=2) +
+    geom_point(data=true_q_df,aes(x=2,y=estimate,col=Parameter),shape=2,size=2)
+    
+csmfvec=sapply(lambdavec,function(l) 
+    csmf_acc(true_p,(insilico_calib_pshrink_mat %>% filter(lambda==l))$estimate))
+dev.new()
+plot(log10(lambdavec),csmfvec)
+
+rhatvec=sapply(lambdavec,function(l) unique((insilico_calib_pshrink_mat %>% filter(lambda==l))$Rhat))
+dev.new()
+plot(log10(lambdavec),pmin(rhatvec,5))
+abline(h=c(1.01,1.05,1.1))
+
+rhatpvec=sapply(lambdavec,function(l) unique((insilico_calib_pshrink_mat %>% filter(lambda==l))$Rhat_p))
+dev.new()
+plot(log10(lambdavec),pmin(rhatpvec,5))
+abline(h=c(1.01,1.05,1.1))
+
+### both shrinkage paths for estimates and csmf show sharp zigzagging changes but stabilizes after a while
+### running for lambda with best csmf
+insilico_comp_btl_pshrink_best <- compositional_btl_pshrink(A_U = comp_array[,,k],
+                                       A_L = comp_array[calib_indices,,k],
+                                       G_L = G_L,
+                                       lambda=lambdavec[which.max(csmfvec)],
+                                       causes = as.character(1:C),
+                                       thin = 5,
+                                       burnin = 1000, ndraws = ndraw_gbql,
+                                       power = 1/100,
+                                       epsilon = .01)
+
+param_df <- ggs(insilico_comp_btl_pshrink_best)
+p_df <- ggs(insilico_comp_btl_pshrink_best, family = "p")
+rhat_max <- max(ggs_Rhat(param_df)$data$Rhat)
+rhat_p_max = max(ggs_Rhat(p_df)$data$Rhat)
+
+
 
 ### Now ensemble
 ens_comp_btl <- compositional_ensemble_btl(A_U = comp_array,
@@ -189,3 +278,58 @@ ens_calib_p <-
     summarise(estimate = mean(value)) %>%
     mutate(method = "Compositional", calibrated = TRUE)
 
+csmf_acc(true_p,ens_calib_p$estimate)
+q_ens=as.vector(apply(comp_array,2,mean))
+csmf_acc(true_p,q_ens)
+
+### calibration using p-shrinkage
+lambdavecens=10^(seq(-2,3,length=50))
+ensemble_calib_pshrink_mat=Reduce('rbind',lapply(lambdavecens,function(lambda){
+print(lambda)
+ensemble_comp_btl_pshrink <- compositional_ensemble_btl_pshrink(A_U = comp_array,
+                                       A_L = comp_array[calib_indices,,],
+                                       G_L = G_L,
+                                       lambda=lambda,
+                                       causes = as.character(1:C),
+                                       thin = 5,
+                                       burnin = 1000, ndraws = ndraw_gbql,
+                                       power = 1/100,
+                                       epsilon = .01)
+
+param_df <- ggs(ensemble_comp_btl_pshrink)
+p_df <- ggs(ensemble_comp_btl_pshrink, family = "p")
+rhat_max <- max(ggs_Rhat(param_df)$data$Rhat)
+rhat_p_max = max(ggs_Rhat(p_df)$data$Rhat)
+
+ensemble_calib_pshrink <-
+    ggs(ensemble_comp_btl_pshrink, "p") %>%
+    group_by(Parameter) %>%
+    summarise(estimate = mean(value)) %>%
+    as.data.frame() %>%
+    mutate(lambda=lambda,Rhat=rhat_max,Rhat_p=rhat_p_max)
+    ensemble_calib_pshrink
+}))
+
+true_q_ens_df=data.frame(Parameter=paste0("p[",1:5,"]"),estimate=q_ens)
+
+### shrinkage paths
+ensemble_calib_pshrink_mat %>%
+    ggplot(aes(x=log10(lambda),y=estimate,col=Parameter)) +
+    geom_line() +
+    geom_point(data=true_p_df,aes(x=3,y=estimate,col=Parameter),alpha=0.5,size=2) +
+    geom_point(data=true_q_ens_df,aes(x=3,y=estimate,col=Parameter),shape=2,size=2)
+    
+csmfvec=sapply(lambdavecens,function(l) 
+    csmf_acc(true_p,(ensemble_calib_pshrink_mat %>% filter(lambda==l))$estimate))
+dev.new()
+plot(log10(lambdavecens),csmfvec)
+
+rhatvec=sapply(lambdavecens,function(l) unique((ensemble_calib_pshrink_mat %>% filter(lambda==l))$Rhat))
+dev.new()
+plot(log10(lambdavecens),pmin(rhatvec,5))
+abline(h=c(1.01,1.05,1.1))
+
+rhatpvec=sapply(lambdavecens,function(l) unique((ensemble_calib_pshrink_mat %>% filter(lambda==l))$Rhat_p))
+dev.new()
+plot(log10(lambdavecens),pmin(rhatpvec,5))
+abline(h=c(1.01,1.05,1.1))
